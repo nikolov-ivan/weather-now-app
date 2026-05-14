@@ -10,15 +10,15 @@ describe('fetchCurrentWeather', () => {
         current_units: {
           time: 'iso8601',
           interval: 'seconds',
-          temperature_2m: '°C',
+          temperature_2m: 'deg C',
           relative_humidity_2m: '%',
-          apparent_temperature: '°C',
+          apparent_temperature: 'deg C',
           is_day: '',
           precipitation: 'mm',
           weather_code: 'wmo code',
           cloud_cover: '%',
           wind_speed_10m: 'km/h',
-          wind_direction_10m: '°',
+          wind_direction_10m: 'deg',
         },
         current: {
           time: '2026-05-14T08:45',
@@ -68,7 +68,7 @@ describe('fetchCurrentWeather', () => {
       windSpeed: 14.8,
       windDirection: 128,
       units: {
-        temperature: '°C',
+        temperature: 'deg C',
         relativeHumidity: '%',
         precipitation: 'mm',
         windSpeed: 'km/h',

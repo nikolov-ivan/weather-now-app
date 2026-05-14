@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { searchLocations } from './api/geocodingApi'
 import { fetchCurrentWeather } from './api/weatherApi'
 import { SearchBox } from './components/SearchBox'
@@ -7,6 +7,9 @@ import type { CurrentWeather } from './models/weather'
 import './App.css'
 
 const DEFAULT_QUERY = 'Varna'
+const CURRENT_LOCATION_ID = -1
+const GEOLOCATION_TIMEOUT_MS = 10000
+const GEOLOCATION_MAX_AGE_MS = 300000
 
 function formatCoordinate(value: number) {
   return value.toFixed(4)
@@ -43,7 +46,32 @@ function formatWind(direction: number, speed: number, unit: string) {
   return `${Math.round(speed)} ${unit} ${Math.round(direction)}deg ${getWindDirectionLabel(direction)}`
 }
 
+function buildCurrentLocation(latitude: number, longitude: number): Location {
+  return {
+    id: CURRENT_LOCATION_ID,
+    name: 'Current location',
+    country: 'Detected from browser',
+    latitude,
+    longitude,
+  }
+}
+
+function getGeolocationErrorMessage(error: GeolocationPositionError): string {
+  switch (error.code) {
+    case 1:
+      return 'Location access was denied. Search for a city or retry with the location button.'
+    case 2:
+      return 'Your location could not be determined. Search for a city or retry.'
+    case 3:
+      return 'Location detection timed out. Search for a city or retry.'
+    default:
+      return 'Location detection failed. Search for a city or retry.'
+  }
+}
+
 function App() {
+  const geolocationSupported =
+    typeof navigator !== 'undefined' && 'geolocation' in navigator
   const [query, setQuery] = useState(DEFAULT_QUERY)
   const [locations, setLocations] = useState<Location[]>([])
   const [searchError, setSearchError] = useState<string | null>(null)
@@ -52,26 +80,27 @@ function App() {
   const [selectedLocationId, setSelectedLocationId] = useState<number | null>(
     null,
   )
+  const [selectedLocation, setSelectedLocation] = useState<Location | null>(null)
   const [currentWeather, setCurrentWeather] = useState<CurrentWeather | null>(
     null,
   )
   const [weatherError, setWeatherError] = useState<string | null>(null)
   const [isWeatherLoading, setIsWeatherLoading] = useState(false)
+  const [isLocatingUser, setIsLocatingUser] = useState(geolocationSupported)
+  const [locationMessage, setLocationMessage] = useState<string | null>(
+    geolocationSupported
+      ? 'Trying to detect your current location...'
+      : 'Browser location is unavailable. Search for a city instead.',
+  )
+  const [locationMessageTone, setLocationMessageTone] = useState<
+    'neutral' | 'success' | 'error'
+  >(geolocationSupported ? 'neutral' : 'error')
   const searchAbortControllerRef = useRef<AbortController | null>(null)
   const weatherAbortControllerRef = useRef<AbortController | null>(null)
-
-  const selectedLocation = useMemo(
-    () =>
-      locations.find((location) => location.id === selectedLocationId) ?? null,
-    [locations, selectedLocationId],
+  const autoLocationAllowedRef = useRef(true)
+  const loadCurrentWeatherRef = useRef<(location: Location) => Promise<void>>(
+    async () => {},
   )
-
-  useEffect(() => {
-    return () => {
-      searchAbortControllerRef.current?.abort()
-      weatherAbortControllerRef.current?.abort()
-    }
-  }, [])
 
   const statusMessage = useMemo(() => {
     if (searchError) {
@@ -101,12 +130,14 @@ function App() {
     weatherAbortControllerRef.current?.abort()
     weatherAbortControllerRef.current = null
     setSelectedLocationId(null)
+    setSelectedLocation(null)
     setCurrentWeather(null)
     setWeatherError(null)
     setIsWeatherLoading(false)
   }
 
-  async function loadCurrentWeather(location: Location) {
+  const loadCurrentWeather = useCallback(async (location: Location) => {
+    setSelectedLocation(location)
     setSelectedLocationId(location.id)
     weatherAbortControllerRef.current?.abort()
 
@@ -148,10 +179,121 @@ function App() {
         setIsWeatherLoading(false)
       }
     }
+  }, [])
+
+  useEffect(() => {
+    loadCurrentWeatherRef.current = loadCurrentWeather
+  }, [loadCurrentWeather])
+
+  async function requestCurrentLocation(manual = false) {
+      if (typeof navigator === 'undefined' || !navigator.geolocation) {
+        setLocationMessage(
+          'Browser location is unavailable. Search for a city instead.',
+        )
+        setLocationMessageTone('error')
+        setIsLocatingUser(false)
+        return
+      }
+
+      setIsLocatingUser(true)
+      setLocationMessage(
+        manual
+          ? 'Detecting your current location...'
+          : 'Trying to detect your current location...',
+      )
+      setLocationMessageTone('neutral')
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          if (!manual && !autoLocationAllowedRef.current) {
+            return
+          }
+
+          setIsLocatingUser(false)
+          setLocationMessage('Using your current location.')
+          setLocationMessageTone('success')
+
+          const currentLocation = buildCurrentLocation(
+            position.coords.latitude,
+            position.coords.longitude,
+          )
+
+          void loadCurrentWeather(currentLocation)
+        },
+        (error) => {
+          if (!manual && !autoLocationAllowedRef.current) {
+            return
+          }
+
+          setIsLocatingUser(false)
+          setLocationMessage(getGeolocationErrorMessage(error))
+          setLocationMessageTone('error')
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: GEOLOCATION_TIMEOUT_MS,
+          maximumAge: GEOLOCATION_MAX_AGE_MS,
+        },
+      )
   }
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      return () => {
+        autoLocationAllowedRef.current = false
+        searchAbortControllerRef.current?.abort()
+        weatherAbortControllerRef.current?.abort()
+      }
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        if (!autoLocationAllowedRef.current) {
+          return
+        }
+
+        setIsLocatingUser(false)
+        setLocationMessage('Using your current location.')
+        setLocationMessageTone('success')
+
+        const currentLocation = buildCurrentLocation(
+          position.coords.latitude,
+          position.coords.longitude,
+        )
+
+        void loadCurrentWeatherRef.current(currentLocation)
+      },
+      (error) => {
+        if (!autoLocationAllowedRef.current) {
+          return
+        }
+
+        setIsLocatingUser(false)
+        setLocationMessage(getGeolocationErrorMessage(error))
+        setLocationMessageTone('error')
+      },
+      {
+        enableHighAccuracy: false,
+        timeout: GEOLOCATION_TIMEOUT_MS,
+        maximumAge: GEOLOCATION_MAX_AGE_MS,
+      },
+    )
+
+    return () => {
+      autoLocationAllowedRef.current = false
+      searchAbortControllerRef.current?.abort()
+      weatherAbortControllerRef.current?.abort()
+    }
+  }, [])
 
   async function handleSearch() {
     const normalizedQuery = query.trim()
+    autoLocationAllowedRef.current = false
+    setIsLocatingUser(false)
+
+    if (locationMessageTone !== 'error') {
+      setLocationMessage(null)
+    }
 
     if (normalizedQuery.length < 2) {
       searchAbortControllerRef.current?.abort()
@@ -214,8 +356,9 @@ function App() {
         <p className="page-header__eyebrow">WeatherNow</p>
         <h1>Search a city and load current conditions</h1>
         <p className="page-header__intro">
-          The app now resolves cities with Open-Meteo geocoding and loads live
-          current weather for the selected location.
+          The app now resolves cities with Open-Meteo geocoding, loads live
+          current weather for the selected location, and can auto-detect your
+          current position through the browser.
         </p>
       </header>
 
@@ -236,6 +379,27 @@ function App() {
             >
               {statusMessage}
             </p>
+            <div className="search-band__actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  autoLocationAllowedRef.current = false
+                  void requestCurrentLocation(true)
+                }}
+                disabled={isLocatingUser}
+              >
+                {isLocatingUser ? 'Detecting location...' : 'Use my location'}
+              </button>
+              {locationMessage ? (
+                <p
+                  className={`assistive-message assistive-message--${locationMessageTone}`}
+                  aria-live="polite"
+                >
+                  {locationMessage}
+                </p>
+              ) : null}
+            </div>
           </div>
         </section>
 
@@ -261,6 +425,7 @@ function App() {
                       type="button"
                       className="result-card__button"
                       onClick={() => {
+                        autoLocationAllowedRef.current = false
                         void loadCurrentWeather(location)
                       }}
                     >
@@ -316,14 +481,20 @@ function App() {
               <p>
                 {selectedLocation
                   ? `Live model conditions for ${selectedLocation.name}.`
-                  : 'Run a city search first to load current conditions.'}
+                  : isLocatingUser
+                    ? 'Trying to detect your current location.'
+                    : 'Run a city search first to load current conditions.'}
               </p>
             </div>
           </div>
 
           {!selectedLocation ? (
             <div className="results-empty">
-              <p>Choose a matching location to fetch current weather data.</p>
+              <p>
+                {isLocatingUser
+                  ? 'Waiting for browser location access before loading weather.'
+                  : 'Choose a matching location to fetch current weather data.'}
+              </p>
             </div>
           ) : isWeatherLoading ? (
             <div className="results-empty">

@@ -6,6 +6,7 @@ The current implementation now covers:
 
 - `Search a city like Varna and get latitude/longitude from Open-Meteo geocoding`
 - `Load current weather for the selected matching location`
+- `Auto-detect current browser location and load weather for it`
 
 ## Current Status
 
@@ -18,6 +19,7 @@ The current implementation now covers:
 ## Features Available Now
 
 - Search for a city by name
+- Auto-detect the user's current browser location on load
 - Fetch matching locations from the Open-Meteo Geocoding API
 - Auto-load current weather for the first matching location
 - Switch current weather by selecting a different matching location

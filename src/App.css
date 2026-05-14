@@ -102,8 +102,31 @@
   background: #7e958b;
 }
 
+.search-band__actions {
+  display: flex;
+  align-items: start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.secondary-button {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid #b7c6bd;
+  border-radius: 8px;
+  background: #fcfcf7;
+  color: #1f2923;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.secondary-button:disabled {
+  color: #7e958b;
+}
+
 .search-form__hint,
 .status-message,
+.assistive-message,
 .results-section__header p,
 .result-card__top p,
 .results-empty p,
@@ -116,6 +139,7 @@
 
 .search-form__hint,
 .status-message,
+.assistive-message,
 .results-section__header p,
 .result-card__top p,
 .results-empty p,
@@ -126,6 +150,19 @@
 
 .status-message {
   min-height: 1.5rem;
+}
+
+.assistive-message {
+  min-height: 1.5rem;
+  padding-top: 10px;
+}
+
+.assistive-message--success {
+  color: #1e6c59;
+}
+
+.assistive-message--error {
+  color: #a33f2e;
 }
 
 .status-message--error {
@@ -295,6 +332,10 @@
 
   .search-form__button {
     width: 100%;
+  }
+
+  .search-band__actions {
+    flex-direction: column;
   }
 
   .results-section__header,
