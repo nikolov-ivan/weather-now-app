@@ -352,58 +352,8 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="page-header">
-        <p className="page-header__eyebrow">WeatherNow</p>
-        <h1>Search a city and load current conditions</h1>
-        <p className="page-header__intro">
-          The app now resolves cities with Open-Meteo geocoding, loads live
-          current weather for the selected location, and can auto-detect your
-          current position through the browser.
-        </p>
-      </header>
-
       <main className="page-main">
-        <section className="search-band" aria-label="City search">
-          <div className="search-band__inner">
-            <SearchBox
-              value={query}
-              onChange={setQuery}
-              onSubmit={() => {
-                void handleSearch()
-              }}
-              isLoading={isSearchLoading}
-            />
-            <p
-              className={`status-message${searchError ? ' status-message--error' : ''}`}
-              aria-live="polite"
-            >
-              {statusMessage}
-            </p>
-            <div className="search-band__actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => {
-                  autoLocationAllowedRef.current = false
-                  void requestCurrentLocation(true)
-                }}
-                disabled={isLocatingUser}
-              >
-                {isLocatingUser ? 'Detecting location...' : 'Use my location'}
-              </button>
-              {locationMessage ? (
-                <p
-                  className={`assistive-message assistive-message--${locationMessageTone}`}
-                  aria-live="polite"
-                >
-                  {locationMessage}
-                </p>
-              ) : null}
-            </div>
-          </div>
-        </section>
-
-        <section className="weather-section" aria-labelledby="weather-title">
+        <section className="weather-section weather-section--top" aria-labelledby="weather-title">
           <div className="results-section__header">
             <div>
               <h2 id="weather-title">Current weather</h2>
@@ -518,6 +468,46 @@ function App() {
               <p>Choose a matching location to fetch current weather data.</p>
             </div>
           )}
+        </section>
+
+        <section className="search-band" aria-label="City search">
+          <div className="search-band__inner">
+            <SearchBox
+              value={query}
+              onChange={setQuery}
+              onSubmit={() => {
+                void handleSearch()
+              }}
+              isLoading={isSearchLoading}
+            />
+            <p
+              className={`status-message${searchError ? ' status-message--error' : ''}`}
+              aria-live="polite"
+            >
+              {statusMessage}
+            </p>
+            <div className="search-band__actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  autoLocationAllowedRef.current = false
+                  void requestCurrentLocation(true)
+                }}
+                disabled={isLocatingUser}
+              >
+                {isLocatingUser ? 'Detecting location...' : 'Use my location'}
+              </button>
+              {locationMessage ? (
+                <p
+                  className={`assistive-message assistive-message--${locationMessageTone}`}
+                  aria-live="polite"
+                >
+                  {locationMessage}
+                </p>
+              ) : null}
+            </div>
+          </div>
         </section>
 
         <section className="results-section" aria-labelledby="results-title">
