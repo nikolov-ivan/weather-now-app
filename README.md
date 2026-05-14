@@ -60,6 +60,7 @@ http://localhost:5173/
 npm run dev
 npm run build
 npm run lint
+npm run test
 npm run preview
 ```
 
@@ -69,6 +70,7 @@ The project currently passes:
 
 - `npm run build`
 - `npm run lint`
+- `npm run test`
 
 ## Next Steps
 
