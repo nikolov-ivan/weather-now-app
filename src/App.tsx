@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { searchLocations } from './api/geocodingApi'
+import { fetchVisitorCapital } from './api/visitorLocationApi'
 import { fetchCurrentWeather } from './api/weatherApi'
 import { SearchBox } from './components/SearchBox'
 import type { Location } from './models/location'
@@ -98,6 +99,7 @@ function App() {
   const searchAbortControllerRef = useRef<AbortController | null>(null)
   const weatherAbortControllerRef = useRef<AbortController | null>(null)
   const autoLocationAllowedRef = useRef(true)
+  const canApplyDetectedDefaultQueryRef = useRef(true)
   const loadCurrentWeatherRef = useRef<(location: Location) => Promise<void>>(
     async () => {},
   )
@@ -185,70 +187,49 @@ function App() {
     loadCurrentWeatherRef.current = loadCurrentWeather
   }, [loadCurrentWeather])
 
-  async function requestCurrentLocation(manual = false) {
-      if (typeof navigator === 'undefined' || !navigator.geolocation) {
-        setLocationMessage(
-          'Browser location is unavailable. Search for a city instead.',
-        )
-        setLocationMessageTone('error')
-        setIsLocatingUser(false)
-        return
-      }
-
-      setIsLocatingUser(true)
-      setLocationMessage(
-        manual
-          ? 'Detecting your current location...'
-          : 'Trying to detect your current location...',
-      )
-      setLocationMessageTone('neutral')
-
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          if (!manual && !autoLocationAllowedRef.current) {
-            return
-          }
-
-          setIsLocatingUser(false)
-          setLocationMessage('Using your current location.')
-          setLocationMessageTone('success')
-
-          const currentLocation = buildCurrentLocation(
-            position.coords.latitude,
-            position.coords.longitude,
-          )
-
-          void loadCurrentWeather(currentLocation)
-        },
-        (error) => {
-          if (!manual && !autoLocationAllowedRef.current) {
-            return
-          }
-
-          setIsLocatingUser(false)
-          setLocationMessage(getGeolocationErrorMessage(error))
-          setLocationMessageTone('error')
-        },
-        {
-          enableHighAccuracy: false,
-          timeout: GEOLOCATION_TIMEOUT_MS,
-          maximumAge: GEOLOCATION_MAX_AGE_MS,
-        },
-      )
-  }
-
   useEffect(() => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      return () => {
-        autoLocationAllowedRef.current = false
-        searchAbortControllerRef.current?.abort()
-        weatherAbortControllerRef.current?.abort()
-      }
+    const controller = new AbortController()
+
+    void fetchVisitorCapital(controller.signal)
+      .then((visitorCapital) => {
+        if (!visitorCapital || !canApplyDetectedDefaultQueryRef.current) {
+          return
+        }
+
+        setQuery(visitorCapital.capital)
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return
+        }
+      })
+
+    return () => {
+      controller.abort()
     }
+  }, [])
+
+  async function requestCurrentLocation(manual = false) {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setLocationMessage(
+        'Browser location is unavailable. Search for a city instead.',
+      )
+      setLocationMessageTone('error')
+      setIsLocatingUser(false)
+      return
+    }
+
+    setIsLocatingUser(true)
+    setLocationMessage(
+      manual
+        ? 'Detecting your current location...'
+        : 'Trying to detect your current location...',
+    )
+    setLocationMessageTone('neutral')
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        if (!autoLocationAllowedRef.current) {
+        if (!manual && !autoLocationAllowedRef.current) {
           return
         }
 
@@ -261,10 +242,10 @@ function App() {
           position.coords.longitude,
         )
 
-        void loadCurrentWeatherRef.current(currentLocation)
+        void loadCurrentWeather(currentLocation)
       },
       (error) => {
-        if (!autoLocationAllowedRef.current) {
+        if (!manual && !autoLocationAllowedRef.current) {
           return
         }
 
@@ -278,17 +259,17 @@ function App() {
         maximumAge: GEOLOCATION_MAX_AGE_MS,
       },
     )
+  }
 
-    return () => {
-      autoLocationAllowedRef.current = false
-      searchAbortControllerRef.current?.abort()
-      weatherAbortControllerRef.current?.abort()
-    }
-  }, [])
+  function handleQueryChange(nextQuery: string) {
+    canApplyDetectedDefaultQueryRef.current = false
+    setQuery(nextQuery)
+  }
 
   async function handleSearch() {
     const normalizedQuery = query.trim()
     autoLocationAllowedRef.current = false
+    canApplyDetectedDefaultQueryRef.current = false
     setIsLocatingUser(false)
 
     if (locationMessageTone !== 'error') {
@@ -349,6 +330,55 @@ function App() {
       }
     }
   }
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      return () => {
+        autoLocationAllowedRef.current = false
+        searchAbortControllerRef.current?.abort()
+        weatherAbortControllerRef.current?.abort()
+      }
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        if (!autoLocationAllowedRef.current) {
+          return
+        }
+
+        setIsLocatingUser(false)
+        setLocationMessage('Using your current location.')
+        setLocationMessageTone('success')
+
+        const currentLocation = buildCurrentLocation(
+          position.coords.latitude,
+          position.coords.longitude,
+        )
+
+        void loadCurrentWeatherRef.current(currentLocation)
+      },
+      (error) => {
+        if (!autoLocationAllowedRef.current) {
+          return
+        }
+
+        setIsLocatingUser(false)
+        setLocationMessage(getGeolocationErrorMessage(error))
+        setLocationMessageTone('error')
+      },
+      {
+        enableHighAccuracy: false,
+        timeout: GEOLOCATION_TIMEOUT_MS,
+        maximumAge: GEOLOCATION_MAX_AGE_MS,
+      },
+    )
+
+    return () => {
+      autoLocationAllowedRef.current = false
+      searchAbortControllerRef.current?.abort()
+      weatherAbortControllerRef.current?.abort()
+    }
+  }, [])
 
   return (
     <div className="app-shell">
@@ -474,7 +504,7 @@ function App() {
           <div className="search-band__inner">
             <SearchBox
               value={query}
-              onChange={setQuery}
+              onChange={handleQueryChange}
               onSubmit={() => {
                 void handleSearch()
               }}

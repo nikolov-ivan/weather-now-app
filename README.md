@@ -7,6 +7,7 @@ The current implementation now covers:
 - `Search a city like Varna and get latitude/longitude from Open-Meteo geocoding`
 - `Load current weather for the selected matching location`
 - `Auto-detect current browser location and load weather for it`
+- `Use the visitor country capital as the default city search value`
 
 ## Current Status
 
@@ -19,6 +20,7 @@ The current implementation now covers:
 ## Features Available Now
 
 - Search for a city by name
+- Pre-fill city search with the visitor country's capital
 - Auto-detect the user's current browser location on load
 - Fetch matching locations from the Open-Meteo Geocoding API
 - Auto-load current weather for the first matching location
@@ -44,6 +46,7 @@ The current implementation now covers:
 - Vite
 - Open-Meteo Geocoding API
 - Open-Meteo Forecast API
+- ipapi IP Location API
 
 ## Getting Started
 
@@ -102,3 +105,4 @@ Weather and geocoding data are powered by Open-Meteo:
 - https://open-meteo.com/
 - https://open-meteo.com/en/docs/geocoding-api
 - https://open-meteo.com/en/docs
+- https://ipapi.co/api/

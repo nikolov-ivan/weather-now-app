@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { searchLocations } from './api/geocodingApi'
+import { fetchVisitorCapital } from './api/visitorLocationApi'
 import { fetchCurrentWeather } from './api/weatherApi'
 
 vi.mock('./api/geocodingApi', () => ({
@@ -13,8 +14,13 @@ vi.mock('./api/weatherApi', () => ({
   fetchCurrentWeather: vi.fn(),
 }))
 
+vi.mock('./api/visitorLocationApi', () => ({
+  fetchVisitorCapital: vi.fn(),
+}))
+
 const mockedSearchLocations = vi.mocked(searchLocations)
 const mockedFetchCurrentWeather = vi.mocked(fetchCurrentWeather)
+const mockedFetchVisitorCapital = vi.mocked(fetchVisitorCapital)
 
 function mockGeolocationSuccess(latitude: number, longitude: number) {
   const getCurrentPosition = vi.fn(
@@ -70,6 +76,8 @@ describe('App', () => {
   beforeEach(() => {
     mockedSearchLocations.mockReset()
     mockedFetchCurrentWeather.mockReset()
+    mockedFetchVisitorCapital.mockReset()
+    mockedFetchVisitorCapital.mockResolvedValue(null)
 
     Object.defineProperty(window.navigator, 'geolocation', {
       configurable: true,
@@ -84,6 +92,48 @@ describe('App', () => {
       screen.getByText('Start with Varna to validate the first checkpoint.'),
     ).toBeInTheDocument()
     expect(screen.getByDisplayValue('Varna')).toBeInTheDocument()
+  })
+
+  it('uses the detected visitor country capital as the default search query', async () => {
+    mockedFetchVisitorCapital.mockResolvedValue({
+      capital: 'Sofia',
+      countryCode: 'BG',
+      countryName: 'Bulgaria',
+    })
+
+    render(<App />)
+
+    expect(await screen.findByDisplayValue('Sofia')).toBeInTheDocument()
+  })
+
+  it('does not overwrite a query typed before visitor country detection finishes', async () => {
+    const user = userEvent.setup()
+    let resolveVisitorCapital: (
+      value: Awaited<ReturnType<typeof fetchVisitorCapital>>,
+    ) => void = () => {}
+
+    mockedFetchVisitorCapital.mockReturnValue(
+      new Promise((resolve) => {
+        resolveVisitorCapital = resolve
+      }),
+    )
+
+    render(<App />)
+
+    const input = screen.getByLabelText(/search city/i)
+
+    await user.clear(input)
+    await user.type(input, 'Paris')
+
+    resolveVisitorCapital({
+      capital: 'Sofia',
+      countryCode: 'BG',
+      countryName: 'Bulgaria',
+    })
+
+    await waitFor(() => {
+      expect(input).toHaveValue('Paris')
+    })
   })
 
   it('automatically loads current weather for the browser location when geolocation succeeds', async () => {
