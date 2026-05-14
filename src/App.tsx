@@ -403,77 +403,6 @@ function App() {
           </div>
         </section>
 
-        <section className="results-section" aria-labelledby="results-title">
-          <div className="results-section__header">
-            <div>
-              <h2 id="results-title">Matching locations</h2>
-              <p>Select a result to load current weather for that location.</p>
-            </div>
-          </div>
-
-          {locations.length > 0 ? (
-            <ul className="results-grid">
-              {locations.map((location) => {
-                const isSelected = selectedLocationId === location.id
-
-                return (
-                  <li
-                    key={location.id}
-                    className={`result-card${isSelected ? ' result-card--selected' : ''}`}
-                  >
-                    <button
-                      type="button"
-                      className="result-card__button"
-                      onClick={() => {
-                        autoLocationAllowedRef.current = false
-                        void loadCurrentWeather(location)
-                      }}
-                    >
-                      <div className="result-card__top">
-                        <div>
-                          <h3>{location.name}</h3>
-                          <p>{formatLocationLine(location)}</p>
-                        </div>
-                      </div>
-                      <dl className="result-card__details">
-                        <div>
-                          <dt>Latitude</dt>
-                          <dd>{formatCoordinate(location.latitude)}</dd>
-                        </div>
-                        <div>
-                          <dt>Longitude</dt>
-                          <dd>{formatCoordinate(location.longitude)}</dd>
-                        </div>
-                        <div>
-                          <dt>Country code</dt>
-                          <dd>{location.countryCode ?? 'N/A'}</dd>
-                        </div>
-                        <div>
-                          <dt>Timezone</dt>
-                          <dd>{location.timezone ?? 'N/A'}</dd>
-                        </div>
-                      </dl>
-                      <p className="result-card__selection">
-                        {isSelected
-                          ? 'Current weather loaded for this location.'
-                          : 'Load current weather for this location.'}
-                      </p>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          ) : (
-            <div className="results-empty">
-              <p>
-                {hasSearched
-                  ? 'Try another city name if you need a different match.'
-                  : 'Results will appear here after the first search.'}
-              </p>
-            </div>
-          )}
-        </section>
-
         <section className="weather-section" aria-labelledby="weather-title">
           <div className="results-section__header">
             <div>
@@ -587,6 +516,77 @@ function App() {
           ) : (
             <div className="results-empty">
               <p>Choose a matching location to fetch current weather data.</p>
+            </div>
+          )}
+        </section>
+
+        <section className="results-section" aria-labelledby="results-title">
+          <div className="results-section__header">
+            <div>
+              <h2 id="results-title">Matching locations</h2>
+              <p>Select a result to load current weather for that location.</p>
+            </div>
+          </div>
+
+          {locations.length > 0 ? (
+            <ul className="results-grid">
+              {locations.map((location) => {
+                const isSelected = selectedLocationId === location.id
+
+                return (
+                  <li
+                    key={location.id}
+                    className={`result-card${isSelected ? ' result-card--selected' : ''}`}
+                  >
+                    <button
+                      type="button"
+                      className="result-card__button"
+                      onClick={() => {
+                        autoLocationAllowedRef.current = false
+                        void loadCurrentWeather(location)
+                      }}
+                    >
+                      <div className="result-card__top">
+                        <div>
+                          <h3>{location.name}</h3>
+                          <p>{formatLocationLine(location)}</p>
+                        </div>
+                      </div>
+                      <dl className="result-card__details">
+                        <div>
+                          <dt>Latitude</dt>
+                          <dd>{formatCoordinate(location.latitude)}</dd>
+                        </div>
+                        <div>
+                          <dt>Longitude</dt>
+                          <dd>{formatCoordinate(location.longitude)}</dd>
+                        </div>
+                        <div>
+                          <dt>Country code</dt>
+                          <dd>{location.countryCode ?? 'N/A'}</dd>
+                        </div>
+                        <div>
+                          <dt>Timezone</dt>
+                          <dd>{location.timezone ?? 'N/A'}</dd>
+                        </div>
+                      </dl>
+                      <p className="result-card__selection">
+                        {isSelected
+                          ? 'Current weather loaded for this location.'
+                          : 'Load current weather for this location.'}
+                      </p>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          ) : (
+            <div className="results-empty">
+              <p>
+                {hasSearched
+                  ? 'Try another city name if you need a different match.'
+                  : 'Results will appear here after the first search.'}
+              </p>
             </div>
           )}
         </section>
