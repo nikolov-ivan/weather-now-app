@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Analytics } from '@vercel/analytics/react'
 import { searchLocations } from './api/geocodingApi'
+import {
+  reverseGeocodeLocation,
+  type ReverseGeocodedLocation,
+} from './api/reverseGeocodingApi'
 import { fetchVisitorCapital } from './api/visitorLocationApi'
 import { fetchCurrentWeather } from './api/weatherApi'
 import { SearchBox } from './components/SearchBox'
@@ -150,13 +154,20 @@ function formatForecastDay(date: string) {
   return weekday.charAt(0).toUpperCase() + weekday.slice(1)
 }
 
-function buildCurrentLocation(latitude: number, longitude: number): Location {
+function buildCurrentLocation(
+  latitude: number,
+  longitude: number,
+  resolvedLocation?: ReverseGeocodedLocation,
+): Location {
   return {
     id: CURRENT_LOCATION_ID,
-    name: 'Current location',
-    country: 'Detected from browser',
+    name: resolvedLocation?.name ?? 'Current location',
+    country: resolvedLocation?.country ?? '',
     latitude,
     longitude,
+    admin1: resolvedLocation?.admin1,
+    countryCode: resolvedLocation?.countryCode,
+    timezone: resolvedLocation?.timezone,
   }
 }
 
@@ -339,6 +350,7 @@ function App() {
   >(geolocationSupported ? 'neutral' : 'error')
   const searchAbortControllerRef = useRef<AbortController | null>(null)
   const weatherAbortControllerRef = useRef<AbortController | null>(null)
+  const reverseGeocodeAbortControllerRef = useRef<AbortController | null>(null)
   const autoLocationAllowedRef = useRef(true)
   const canApplyDetectedDefaultQueryRef = useRef(true)
   const loadCurrentWeatherRef = useRef<(location: Location) => Promise<void>>(
@@ -371,7 +383,9 @@ function App() {
 
   function clearWeatherState() {
     weatherAbortControllerRef.current?.abort()
+    reverseGeocodeAbortControllerRef.current?.abort()
     weatherAbortControllerRef.current = null
+    reverseGeocodeAbortControllerRef.current = null
     setSelectedLocationId(null)
     setSelectedLocation(null)
     setCurrentWeather(null)
@@ -465,6 +479,54 @@ function App() {
     }
   }, [])
 
+  const loadDetectedCurrentLocation = useCallback(
+    async (latitude: number, longitude: number, manual: boolean) => {
+      reverseGeocodeAbortControllerRef.current?.abort()
+
+      const controller = new AbortController()
+      reverseGeocodeAbortControllerRef.current = controller
+
+      try {
+        const resolvedLocation = await reverseGeocodeLocation(
+          latitude,
+          longitude,
+          controller.signal,
+        )
+
+        if (reverseGeocodeAbortControllerRef.current !== controller) {
+          return
+        }
+
+        if (!manual && !autoLocationAllowedRef.current) {
+          return
+        }
+
+        void loadCurrentWeather(
+          buildCurrentLocation(
+            latitude,
+            longitude,
+            resolvedLocation ?? undefined,
+          ),
+        )
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return
+        }
+
+        if (!manual && !autoLocationAllowedRef.current) {
+          return
+        }
+
+        void loadCurrentWeather(buildCurrentLocation(latitude, longitude))
+      } finally {
+        if (reverseGeocodeAbortControllerRef.current === controller) {
+          reverseGeocodeAbortControllerRef.current = null
+        }
+      }
+    },
+    [loadCurrentWeather],
+  )
+
   async function requestCurrentLocation(manual = false) {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       setLocationMessage(
@@ -493,12 +555,11 @@ function App() {
         setLocationMessage('Using your current location.')
         setLocationMessageTone('success')
 
-        const currentLocation = buildCurrentLocation(
+        void loadDetectedCurrentLocation(
           position.coords.latitude,
           position.coords.longitude,
+          manual,
         )
-
-        void loadCurrentWeather(currentLocation)
       },
       (error) => {
         if (!manual && !autoLocationAllowedRef.current) {
@@ -527,6 +588,8 @@ function App() {
     autoLocationAllowedRef.current = false
     canApplyDetectedDefaultQueryRef.current = false
     setIsLocatingUser(false)
+    reverseGeocodeAbortControllerRef.current?.abort()
+    reverseGeocodeAbortControllerRef.current = null
 
     if (locationMessageTone !== 'error') {
       setLocationMessage(null)
@@ -593,6 +656,7 @@ function App() {
         autoLocationAllowedRef.current = false
         searchAbortControllerRef.current?.abort()
         weatherAbortControllerRef.current?.abort()
+        reverseGeocodeAbortControllerRef.current?.abort()
       }
     }
 
@@ -606,12 +670,11 @@ function App() {
         setLocationMessage('Using your current location.')
         setLocationMessageTone('success')
 
-        const currentLocation = buildCurrentLocation(
+        void loadDetectedCurrentLocation(
           position.coords.latitude,
           position.coords.longitude,
+          false,
         )
-
-        void loadCurrentWeatherRef.current(currentLocation)
       },
       (error) => {
         if (!autoLocationAllowedRef.current) {
@@ -633,8 +696,9 @@ function App() {
       autoLocationAllowedRef.current = false
       searchAbortControllerRef.current?.abort()
       weatherAbortControllerRef.current?.abort()
+      reverseGeocodeAbortControllerRef.current?.abort()
     }
-  }, [])
+  }, [loadDetectedCurrentLocation])
 
   function focusCitySearch() {
     const searchInput = document.getElementById('city-search')

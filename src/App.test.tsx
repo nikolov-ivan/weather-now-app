@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { searchLocations } from './api/geocodingApi'
+import { reverseGeocodeLocation } from './api/reverseGeocodingApi'
 import { fetchVisitorCapital } from './api/visitorLocationApi'
 import { fetchCurrentWeather } from './api/weatherApi'
 import { formatLastUpdated } from './utils/formatLastUpdated'
@@ -10,6 +11,10 @@ import type { CurrentWeather } from './models/weather'
 
 vi.mock('./api/geocodingApi', () => ({
   searchLocations: vi.fn(),
+}))
+
+vi.mock('./api/reverseGeocodingApi', () => ({
+  reverseGeocodeLocation: vi.fn(),
 }))
 
 vi.mock('./api/weatherApi', () => ({
@@ -21,6 +26,7 @@ vi.mock('./api/visitorLocationApi', () => ({
 }))
 
 const mockedSearchLocations = vi.mocked(searchLocations)
+const mockedReverseGeocodeLocation = vi.mocked(reverseGeocodeLocation)
 const mockedFetchCurrentWeather = vi.mocked(fetchCurrentWeather)
 const mockedFetchVisitorCapital = vi.mocked(fetchVisitorCapital)
 
@@ -211,8 +217,17 @@ describe('formatLastUpdated', () => {
 describe('App', () => {
   beforeEach(() => {
     mockedSearchLocations.mockReset()
+    mockedReverseGeocodeLocation.mockReset()
     mockedFetchCurrentWeather.mockReset()
     mockedFetchVisitorCapital.mockReset()
+    mockedReverseGeocodeLocation.mockResolvedValue({
+      name: 'Sofia',
+      country: 'Bulgaria',
+      latitude: 42.6977,
+      longitude: 23.3219,
+      admin1: 'Sofia City Province',
+      countryCode: 'BG',
+    })
     mockedFetchVisitorCapital.mockResolvedValue(null)
 
     Object.defineProperty(window.navigator, 'geolocation', {
@@ -282,6 +297,14 @@ describe('App', () => {
     expect(getCurrentPosition).toHaveBeenCalledTimes(1)
 
     await waitFor(() => {
+      expect(mockedReverseGeocodeLocation).toHaveBeenCalledWith(
+        42.6977,
+        23.3219,
+        expect.any(AbortSignal),
+      )
+    })
+
+    await waitFor(() => {
       expect(mockedFetchCurrentWeather).toHaveBeenCalledWith(
         {
           latitude: 42.6977,
@@ -295,8 +318,22 @@ describe('App', () => {
     expect(
       await screen.findByText('Using your current location.'),
     ).toBeInTheDocument()
-    expect(screen.getByText('Current location')).toBeInTheDocument()
+    expect(screen.getByText('Sofia')).toBeInTheDocument()
+    expect(screen.getByText('Sofia City Province, Bulgaria')).toBeInTheDocument()
     expect(screen.getByText('18°C')).toBeInTheDocument()
+  })
+
+  it('falls back to a generic current location when reverse geocoding fails', async () => {
+    mockGeolocationSuccess(42.6977, 23.3219)
+    mockedReverseGeocodeLocation.mockRejectedValue(
+      new Error('Unable to resolve current location city.'),
+    )
+    mockedFetchCurrentWeather.mockResolvedValue(buildCurrentWeather())
+
+    render(<App />)
+
+    expect(await screen.findByText('Current location')).toBeInTheDocument()
+    expect(screen.queryByText('Detected from browser')).not.toBeInTheDocument()
   })
 
   it('shows a fallback message when browser location access is denied', async () => {
