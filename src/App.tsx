@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Analytics } from '@vercel/analytics/react'
 import { searchLocations } from './api/geocodingApi'
 import { fetchVisitorCapital } from './api/visitorLocationApi'
 import { fetchCurrentWeather } from './api/weatherApi'
@@ -611,6 +612,7 @@ function App() {
           )}
         </section>
       </main>
+      <Analytics />
     </div>
   )
 }
