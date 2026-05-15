@@ -5,13 +5,96 @@ import { fetchVisitorCapital } from './api/visitorLocationApi'
 import { fetchCurrentWeather } from './api/weatherApi'
 import { SearchBox } from './components/SearchBox'
 import type { Location } from './models/location'
-import type { CurrentWeather } from './models/weather'
+import { getWeatherCodeIcon, type CurrentWeather } from './models/weather'
+import { formatLastUpdated } from './utils/formatLastUpdated'
 import './App.css'
 
 const DEFAULT_QUERY = 'Varna'
 const CURRENT_LOCATION_ID = -1
 const GEOLOCATION_TIMEOUT_MS = 10000
 const GEOLOCATION_MAX_AGE_MS = 300000
+const WINDY_SPEED_THRESHOLD = 30
+const LAST_UPDATED_REFRESH_MS = 60000
+
+type WeatherVisualKind =
+  | 'clear'
+  | 'partly-cloudy'
+  | 'cloudy'
+  | 'fog'
+  | 'rain'
+  | 'snow'
+  | 'storm'
+  | 'wind'
+
+function getWeatherVisualKind(weather: CurrentWeather): WeatherVisualKind {
+  if ([95, 96, 99].includes(weather.weatherCode)) {
+    return 'storm'
+  }
+
+  if (
+    [
+      51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82,
+    ].includes(weather.weatherCode)
+  ) {
+    return 'rain'
+  }
+
+  if ([71, 73, 75, 77, 85, 86].includes(weather.weatherCode)) {
+    return 'snow'
+  }
+
+  if ([45, 48].includes(weather.weatherCode)) {
+    return 'fog'
+  }
+
+  if (weather.windSpeed >= WINDY_SPEED_THRESHOLD) {
+    return 'wind'
+  }
+
+  if (weather.weatherCode === 0 || weather.weatherCode === 1) {
+    return 'clear'
+  }
+
+  if (weather.weatherCode === 2) {
+    return 'partly-cloudy'
+  }
+
+  return 'cloudy'
+}
+
+function WeatherVisual({ weather }: { weather: CurrentWeather }) {
+  const visualKind = getWeatherVisualKind(weather)
+
+  return (
+    <div
+      className={`weather-visual weather-visual--${visualKind} ${
+        weather.isDay ? 'weather-visual--day' : 'weather-visual--night'
+      }`}
+      role="img"
+      aria-label={`${weather.weatherDescription} weather animation`}
+    >
+      <div className="weather-visual__sky">
+        <span className="weather-visual__sun" />
+        <span className="weather-visual__moon" />
+        <span className="weather-visual__cloud weather-visual__cloud--back" />
+        <span className="weather-visual__cloud weather-visual__cloud--front" />
+        <span className="weather-visual__bolt" />
+        <span className="weather-visual__fog weather-visual__fog--top" />
+        <span className="weather-visual__fog weather-visual__fog--middle" />
+        <span className="weather-visual__fog weather-visual__fog--bottom" />
+        <span className="weather-visual__wind weather-visual__wind--top" />
+        <span className="weather-visual__wind weather-visual__wind--middle" />
+        <span className="weather-visual__wind weather-visual__wind--bottom" />
+        <span className="weather-visual__drop weather-visual__drop--one" />
+        <span className="weather-visual__drop weather-visual__drop--two" />
+        <span className="weather-visual__drop weather-visual__drop--three" />
+        <span className="weather-visual__snow weather-visual__snow--one" />
+        <span className="weather-visual__snow weather-visual__snow--two" />
+        <span className="weather-visual__snow weather-visual__snow--three" />
+      </div>
+    </div>
+  )
+}
 
 function formatCoordinate(value: number) {
   return value.toFixed(4)
@@ -21,31 +104,50 @@ function formatLocationLine(location: Location) {
   return [location.admin1, location.country].filter(Boolean).join(', ')
 }
 
-function formatTemperature(value: number, unit: string) {
-  return `${value.toFixed(1)} ${unit}`
-}
-
 function formatPercentage(value: number, unit: string) {
   return `${Math.round(value)}${unit}`
 }
 
-function formatPrecipitation(value: number, unit: string) {
-  return `${value.toFixed(1)} ${unit}`
+function formatCompactTemperature(value: number, unit: string) {
+  const roundedValue = Math.round(value)
+  const normalizedUnit = unit.toLowerCase()
+
+  if (normalizedUnit.includes('deg c') || normalizedUnit.includes('°c')) {
+    return `${roundedValue}°C`
+  }
+
+  if (normalizedUnit.includes('deg f') || normalizedUnit.includes('°f')) {
+    return `${roundedValue}°F`
+  }
+
+  return `${roundedValue} ${unit}`
 }
 
-function formatObservationTime(time: string, timezone: string) {
-  return `${time.replace('T', ' ')} (${timezone})`
+function formatWeatherTime(time: string) {
+  return time.slice(11, 16)
 }
 
-function getWindDirectionLabel(direction: number) {
-  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-  const normalizedDirection = ((direction % 360) + 360) % 360
-  const index = Math.round(normalizedDirection / 45) % directions.length
-  return directions[index]
+function formatWindSpeed(speed: number, unit: string) {
+  return `${Math.round(speed)} ${unit}`
 }
 
-function formatWind(direction: number, speed: number, unit: string) {
-  return `${Math.round(speed)} ${unit} ${Math.round(direction)}deg ${getWindDirectionLabel(direction)}`
+function formatUvIndex(value: number) {
+  return String(Math.round(value))
+}
+
+function formatPressure(value: number, unit: string) {
+  return `${Math.round(value)} ${unit}`
+}
+
+function formatForecastDay(date: string) {
+  const [year, month, day] = date.split('-').map(Number)
+  const parsedDate = new Date(Date.UTC(year, month - 1, day, 12))
+  const weekday = new Intl.DateTimeFormat('en-US', {
+    weekday: 'long',
+    timeZone: 'UTC',
+  }).format(parsedDate)
+
+  return weekday.charAt(0).toUpperCase() + weekday.slice(1)
 }
 
 function buildCurrentLocation(latitude: number, longitude: number): Location {
@@ -71,6 +173,143 @@ function getGeolocationErrorMessage(error: GeolocationPositionError): string {
   }
 }
 
+type WeatherDashboardProps = {
+  location: Location
+  weather: CurrentWeather
+  now: Date
+  onChangeLocation: () => void
+}
+
+function WeatherDashboard({
+  location,
+  weather,
+  now,
+  onChangeLocation,
+}: WeatherDashboardProps) {
+  const weatherLabel = weather.weatherDescription
+  const locationLine = formatLocationLine(location)
+  const metrics = [
+    {
+      icon: '💧',
+      label: 'Humidity',
+      value: formatPercentage(
+        weather.relativeHumidity,
+        weather.units.relativeHumidity,
+      ),
+    },
+    {
+      icon: '🌬️',
+      label: 'Wind',
+      value: formatWindSpeed(weather.windSpeed, weather.units.windSpeed),
+    },
+    {
+      icon: '☀️',
+      label: 'UV index',
+      value: formatUvIndex(weather.uvIndex),
+    },
+    {
+      icon: '🧭',
+      label: 'Pressure',
+      value: formatPressure(weather.surfacePressure, weather.units.surfacePressure),
+    },
+  ]
+
+  return (
+    <section className="weather-panel" aria-label="Current conditions">
+      <header className="weather-dashboard__header">
+        <div>
+          <h2>{location.name}</h2>
+          {locationLine ? <p>{locationLine}</p> : null}
+          <p className="weather-dashboard__updated">
+            Updated {formatLastUpdated(weather.time, weather.timezone, now)}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="weather-dashboard__change-button"
+          onClick={onChangeLocation}
+        >
+          Change location
+        </button>
+      </header>
+
+      <div className="weather-dashboard__current">
+        <div className="weather-dashboard__condition">
+          <WeatherVisual weather={weather} />
+          <p>{weatherLabel}</p>
+        </div>
+        <div className="weather-dashboard__temperature">
+          <p>{formatCompactTemperature(weather.temperature, weather.units.temperature)}</p>
+          <span>
+            Feels like{' '}
+            {formatCompactTemperature(
+              weather.apparentTemperature,
+              weather.units.temperature,
+            )}
+          </span>
+        </div>
+      </div>
+
+      <dl className="weather-dashboard__metrics">
+        {metrics.map((metric) => (
+          <div key={metric.label} className="weather-dashboard__metric-card">
+            <dt>
+              <span aria-hidden="true">{metric.icon}</span>
+              {metric.label}
+            </dt>
+            <dd>{metric.value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <section className="weather-dashboard__forecast-section">
+        <h3>Hourly forecast</h3>
+        <ol className="weather-dashboard__hourly-list">
+          {weather.hourlyForecast.map((forecast) => (
+            <li key={forecast.time}>
+              <time dateTime={forecast.time}>{formatWeatherTime(forecast.time)}</time>
+              <span aria-hidden="true">
+                {getWeatherCodeIcon(forecast.weatherCode, forecast.isDay)}
+              </span>
+              <strong>
+                {formatCompactTemperature(
+                  forecast.temperature,
+                  weather.units.temperature,
+                )}
+              </strong>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <section className="weather-dashboard__forecast-section">
+        <h3>5-day forecast</h3>
+        <ol className="weather-dashboard__daily-list">
+          {weather.dailyForecast.map((forecast) => (
+            <li key={forecast.date}>
+              <time dateTime={forecast.date}>{formatForecastDay(forecast.date)}</time>
+              <span aria-hidden="true">
+                {getWeatherCodeIcon(forecast.weatherCode)}
+              </span>
+              <strong>
+                {formatCompactTemperature(
+                  forecast.temperatureMax,
+                  weather.units.temperature,
+                )}{' '}
+                /{' '}
+                {formatCompactTemperature(
+                  forecast.temperatureMin,
+                  weather.units.temperature,
+                )}
+              </strong>
+            </li>
+          ))}
+        </ol>
+      </section>
+    </section>
+  )
+}
+
 function App() {
   const geolocationSupported =
     typeof navigator !== 'undefined' && 'geolocation' in navigator
@@ -86,6 +325,7 @@ function App() {
   const [currentWeather, setCurrentWeather] = useState<CurrentWeather | null>(
     null,
   )
+  const [now, setNow] = useState(() => new Date())
   const [weatherError, setWeatherError] = useState<string | null>(null)
   const [isWeatherLoading, setIsWeatherLoading] = useState(false)
   const [isLocatingUser, setIsLocatingUser] = useState(geolocationSupported)
@@ -162,6 +402,7 @@ function App() {
       )
 
       setCurrentWeather(nextCurrentWeather)
+      setNow(new Date())
     } catch (weatherLoadError) {
       if (
         weatherLoadError instanceof DOMException &&
@@ -187,6 +428,20 @@ function App() {
   useEffect(() => {
     loadCurrentWeatherRef.current = loadCurrentWeather
   }, [loadCurrentWeather])
+
+  useEffect(() => {
+    if (!currentWeather) {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      setNow(new Date())
+    }, LAST_UPDATED_REFRESH_MS)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [currentWeather])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -381,23 +636,20 @@ function App() {
     }
   }, [])
 
+  function focusCitySearch() {
+    const searchInput = document.getElementById('city-search')
+
+    searchInput?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    searchInput?.focus()
+  }
+
   return (
     <div className="app-shell">
       <main className="page-main">
-        <section className="weather-section weather-section--top" aria-labelledby="weather-title">
-          <div className="results-section__header">
-            <div>
-              <h2 id="weather-title">Current weather</h2>
-              <p>
-                {selectedLocation
-                  ? `Live model conditions for ${selectedLocation.name}.`
-                  : isLocatingUser
-                    ? 'Trying to detect your current location.'
-                    : 'Run a city search first to load current conditions.'}
-              </p>
-            </div>
-          </div>
-
+        <section
+          className="weather-section weather-section--top"
+          aria-label="Weather dashboard"
+        >
           {!selectedLocation ? (
             <div className="results-empty">
               <p>
@@ -415,85 +667,12 @@ function App() {
               <p className="status-message--error">{weatherError}</p>
             </div>
           ) : currentWeather ? (
-            <section className="weather-panel" aria-label="Current conditions">
-              <div className="weather-panel__headline">
-                <div className="weather-panel__summary">
-                  <p className="weather-panel__eyebrow">
-                    {selectedLocation.name}
-                  </p>
-                  <h3>{currentWeather.weatherDescription}</h3>
-                  <p>{formatLocationLine(selectedLocation)}</p>
-                </div>
-                <div className="weather-panel__temperature">
-                  <span>
-                    {formatTemperature(
-                      currentWeather.temperature,
-                      currentWeather.units.temperature,
-                    )}
-                  </span>
-                  <p className="weather-panel__subtext">
-                    Feels like{' '}
-                    {formatTemperature(
-                      currentWeather.apparentTemperature,
-                      currentWeather.units.temperature,
-                    )}
-                  </p>
-                </div>
-              </div>
-
-              <dl className="weather-panel__metrics">
-                <div>
-                  <dt>Observed at</dt>
-                  <dd>
-                    {formatObservationTime(
-                      currentWeather.time,
-                      currentWeather.timezone,
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Day / night</dt>
-                  <dd>{currentWeather.isDay ? 'Daytime' : 'Nighttime'}</dd>
-                </div>
-                <div>
-                  <dt>Humidity</dt>
-                  <dd>
-                    {formatPercentage(
-                      currentWeather.relativeHumidity,
-                      currentWeather.units.relativeHumidity,
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Cloud cover</dt>
-                  <dd>
-                    {formatPercentage(
-                      currentWeather.cloudCover,
-                      currentWeather.units.cloudCover,
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Precipitation</dt>
-                  <dd>
-                    {formatPrecipitation(
-                      currentWeather.precipitation,
-                      currentWeather.units.precipitation,
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Wind</dt>
-                  <dd>
-                    {formatWind(
-                      currentWeather.windDirection,
-                      currentWeather.windSpeed,
-                      currentWeather.units.windSpeed,
-                    )}
-                  </dd>
-                </div>
-              </dl>
-            </section>
+            <WeatherDashboard
+              location={selectedLocation}
+              weather={currentWeather}
+              now={now}
+              onChangeLocation={focusCitySearch}
+            />
           ) : (
             <div className="results-empty">
               <p>Choose a matching location to fetch current weather data.</p>
