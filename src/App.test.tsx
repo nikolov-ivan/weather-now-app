@@ -3,7 +3,6 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { searchLocations } from './api/geocodingApi'
-import { reverseGeocodeLocation } from './api/reverseGeocodingApi'
 import { fetchVisitorCapital } from './api/visitorLocationApi'
 import { fetchCurrentWeather } from './api/weatherApi'
 import { formatLastUpdated } from './utils/formatLastUpdated'
@@ -11,10 +10,6 @@ import type { CurrentWeather } from './models/weather'
 
 vi.mock('./api/geocodingApi', () => ({
   searchLocations: vi.fn(),
-}))
-
-vi.mock('./api/reverseGeocodingApi', () => ({
-  reverseGeocodeLocation: vi.fn(),
 }))
 
 vi.mock('./api/weatherApi', () => ({
@@ -26,59 +21,9 @@ vi.mock('./api/visitorLocationApi', () => ({
 }))
 
 const mockedSearchLocations = vi.mocked(searchLocations)
-const mockedReverseGeocodeLocation = vi.mocked(reverseGeocodeLocation)
-const mockedFetchCurrentWeather = vi.mocked(fetchCurrentWeather)
 const mockedFetchVisitorCapital = vi.mocked(fetchVisitorCapital)
-
-function mockGeolocationSuccess(latitude: number, longitude: number) {
-  const getCurrentPosition = vi.fn(
-    (...args: Parameters<Geolocation['getCurrentPosition']>) => {
-      const [success] = args
-
-      success({
-        coords: {
-          latitude,
-          longitude,
-        } as GeolocationCoordinates,
-        timestamp: Date.now(),
-      } as GeolocationPosition)
-    },
-  )
-
-  Object.defineProperty(window.navigator, 'geolocation', {
-    configurable: true,
-    value: {
-      getCurrentPosition,
-    },
-  })
-
-  return getCurrentPosition
-}
-
-function mockGeolocationError(code: number) {
-  const getCurrentPosition = vi.fn(
-    (...args: Parameters<Geolocation['getCurrentPosition']>) => {
-      const [, error] = args
-
-      error?.({
-        code,
-        message: 'Geolocation error',
-        PERMISSION_DENIED: 1,
-        POSITION_UNAVAILABLE: 2,
-        TIMEOUT: 3,
-      } as GeolocationPositionError)
-    },
-  )
-
-  Object.defineProperty(window.navigator, 'geolocation', {
-    configurable: true,
-    value: {
-      getCurrentPosition,
-    },
-  })
-
-  return getCurrentPosition
-}
+const mockedFetchCurrentWeather = vi.mocked(fetchCurrentWeather)
+const lastSelectedLocationStorageKey = 'weather-now:last-selected-location'
 
 function buildCurrentWeather(
   overrides: Partial<CurrentWeather> = {},
@@ -192,6 +137,43 @@ function buildCurrentWeather(
   }
 }
 
+const sofiaLocation = {
+  id: 727011,
+  name: 'Sofia',
+  country: 'Bulgaria',
+  latitude: 42.6977,
+  longitude: 23.3219,
+  admin1: 'Sofia City Province',
+  countryCode: 'BG',
+  timezone: 'Europe/Sofia',
+}
+
+const varnaLocation = {
+  id: 726050,
+  name: 'Varna',
+  country: 'Bulgaria',
+  latitude: 43.21912,
+  longitude: 27.91024,
+  admin1: 'Varna',
+  countryCode: 'BG',
+  timezone: 'Europe/Sofia',
+}
+
+async function chooseCityFromInlineSearch(
+  user: ReturnType<typeof userEvent.setup>,
+  buttonName: string,
+  query: string,
+  resultName = query,
+) {
+  await user.click(screen.getByRole('button', { name: buttonName }))
+  await user.type(screen.getByLabelText(buttonName), query)
+  await user.click(
+    await screen.findByRole('button', {
+      name: new RegExp(`Select ${resultName}`, 'i'),
+    }),
+  )
+}
+
 describe('formatLastUpdated', () => {
   const now = new Date('2026-05-15T03:45:30.000Z')
 
@@ -217,175 +199,60 @@ describe('formatLastUpdated', () => {
 describe('App', () => {
   beforeEach(() => {
     mockedSearchLocations.mockReset()
-    mockedReverseGeocodeLocation.mockReset()
-    mockedFetchCurrentWeather.mockReset()
     mockedFetchVisitorCapital.mockReset()
-    mockedReverseGeocodeLocation.mockResolvedValue({
-      name: 'Sofia',
-      country: 'Bulgaria',
-      latitude: 42.6977,
-      longitude: 23.3219,
-      admin1: 'Sofia City Province',
-      countryCode: 'BG',
-    })
-    mockedFetchVisitorCapital.mockResolvedValue(null)
-
-    Object.defineProperty(window.navigator, 'geolocation', {
-      configurable: true,
-      value: undefined,
-    })
+    mockedFetchCurrentWeather.mockReset()
+    window.localStorage.clear()
   })
 
-  it('shows the initial checkpoint prompt before the first search', () => {
-    render(<App />)
-
-    expect(
-      screen.getByText('Start with Varna to validate the first checkpoint.'),
-    ).toBeInTheDocument()
-    expect(screen.getByDisplayValue('Varna')).toBeInTheDocument()
-  })
-
-  it('uses the detected visitor country capital as the default search query', async () => {
+  it('loads the visitor country capital when no city is stored', async () => {
     mockedFetchVisitorCapital.mockResolvedValue({
       capital: 'Sofia',
       countryCode: 'BG',
       countryName: 'Bulgaria',
     })
-
-    render(<App />)
-
-    expect(await screen.findByDisplayValue('Sofia')).toBeInTheDocument()
-  })
-
-  it('does not overwrite a query typed before visitor country detection finishes', async () => {
-    const user = userEvent.setup()
-    let resolveVisitorCapital: (
-      value: Awaited<ReturnType<typeof fetchVisitorCapital>>,
-    ) => void = () => {}
-
-    mockedFetchVisitorCapital.mockReturnValue(
-      new Promise((resolve) => {
-        resolveVisitorCapital = resolve
-      }),
-    )
-
-    render(<App />)
-
-    const input = screen.getByLabelText(/search city/i)
-
-    await user.clear(input)
-    await user.type(input, 'Paris')
-
-    resolveVisitorCapital({
-      capital: 'Sofia',
-      countryCode: 'BG',
-      countryName: 'Bulgaria',
-    })
-
-    await waitFor(() => {
-      expect(input).toHaveValue('Paris')
-    })
-  })
-
-  it('automatically loads current weather for the browser location when geolocation succeeds', async () => {
-    const getCurrentPosition = mockGeolocationSuccess(42.6977, 23.3219)
-
+    mockedSearchLocations.mockResolvedValue([sofiaLocation])
     mockedFetchCurrentWeather.mockResolvedValue(buildCurrentWeather())
 
     render(<App />)
 
-    expect(getCurrentPosition).toHaveBeenCalledTimes(1)
-
     await waitFor(() => {
-      expect(mockedReverseGeocodeLocation).toHaveBeenCalledWith(
-        42.6977,
-        23.3219,
+      expect(mockedSearchLocations).toHaveBeenCalledWith(
+        'Sofia',
         expect.any(AbortSignal),
       )
     })
-
     await waitFor(() => {
       expect(mockedFetchCurrentWeather).toHaveBeenCalledWith(
         {
           latitude: 42.6977,
           longitude: 23.3219,
-          timezone: undefined,
+          timezone: 'Europe/Sofia',
         },
         expect.any(AbortSignal),
       )
     })
 
+    expect(await screen.findByText('Partly cloudy')).toBeInTheDocument()
     expect(
-      await screen.findByText('Using your current location.'),
+      screen.getByRole('heading', { name: 'Sofia', level: 2 }),
     ).toBeInTheDocument()
-    expect(screen.getByText('Sofia')).toBeInTheDocument()
-    expect(screen.getByText('Sofia City Province, Bulgaria')).toBeInTheDocument()
-    expect(screen.getByText('18°C')).toBeInTheDocument()
+    expect(window.localStorage.getItem(lastSelectedLocationStorageKey)).toContain(
+      '"name":"Sofia"',
+    )
   })
 
-  it('falls back to a generic current location when reverse geocoding fails', async () => {
-    mockGeolocationSuccess(42.6977, 23.3219)
-    mockedReverseGeocodeLocation.mockRejectedValue(
-      new Error('Unable to resolve current location city.'),
+  it('renders the weather dashboard after the default city loads', async () => {
+    window.localStorage.setItem(
+      lastSelectedLocationStorageKey,
+      JSON.stringify(varnaLocation),
     )
     mockedFetchCurrentWeather.mockResolvedValue(buildCurrentWeather())
 
     render(<App />)
-
-    expect(await screen.findByText('Current location')).toBeInTheDocument()
-    expect(screen.queryByText('Detected from browser')).not.toBeInTheDocument()
-  })
-
-  it('shows a fallback message when browser location access is denied', async () => {
-    mockGeolocationError(1)
-
-    render(<App />)
-
-    expect(
-      await screen.findByText(
-        'Location access was denied. Search for a city or retry with the location button.',
-      ),
-    ).toBeInTheDocument()
-  })
-
-  it('renders matching locations and current weather after a successful search', async () => {
-    const user = userEvent.setup()
-    mockGeolocationError(1)
-
-    mockedSearchLocations.mockResolvedValue([
-      {
-        id: 726050,
-        name: 'Varna',
-        country: 'Bulgaria',
-        latitude: 43.21912,
-        longitude: 27.91024,
-        admin1: 'Varna',
-        countryCode: 'BG',
-        timezone: 'Europe/Sofia',
-      },
-    ])
-
-    mockedFetchCurrentWeather.mockResolvedValue(buildCurrentWeather())
-
-    render(<App />)
-
-    await user.click(screen.getByRole('button', { name: 'Search' }))
-
-    expect(mockedSearchLocations).toHaveBeenCalledWith(
-      'Varna',
-      expect.any(AbortSignal),
-    )
-
-    expect(mockedFetchCurrentWeather).toHaveBeenCalledWith(
-      {
-        latitude: 43.21912,
-        longitude: 27.91024,
-        timezone: 'Europe/Sofia',
-      },
-      expect.any(AbortSignal),
-    )
 
     expect(await screen.findByText('Partly cloudy')).toBeInTheDocument()
+    expect(mockedFetchVisitorCapital).not.toHaveBeenCalled()
+    expect(mockedSearchLocations).not.toHaveBeenCalled()
     expect(
       screen.getByRole('img', {
         name: 'Partly cloudy weather animation',
@@ -398,45 +265,88 @@ describe('App', () => {
     expect(screen.getByText('5-day forecast')).toBeInTheDocument()
   })
 
+  it('expands the change location control and loads weather from a dropdown result', async () => {
+    const user = userEvent.setup()
+    window.localStorage.setItem(
+      lastSelectedLocationStorageKey,
+      JSON.stringify(varnaLocation),
+    )
+
+    mockedSearchLocations.mockResolvedValue([sofiaLocation])
+    mockedFetchCurrentWeather
+      .mockResolvedValueOnce(buildCurrentWeather())
+      .mockResolvedValueOnce(
+        buildCurrentWeather({
+          temperature: 12.4,
+          apparentTemperature: 11.8,
+          weatherCode: 3,
+          weatherDescription: 'Overcast',
+        }),
+      )
+
+    render(<App />)
+
+    expect(await screen.findByText('Partly cloudy')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Varna', level: 2 })).toBeInTheDocument()
+
+    await chooseCityFromInlineSearch(user, 'Change location', 'Sofia')
+
+    await waitFor(() => {
+      expect(mockedFetchCurrentWeather).toHaveBeenLastCalledWith(
+        {
+          latitude: 42.6977,
+          longitude: 23.3219,
+          timezone: 'Europe/Sofia',
+        },
+        expect.any(AbortSignal),
+      )
+    })
+    expect(await screen.findByText('Overcast')).toBeInTheDocument()
+    expect(screen.getByText('12°C')).toBeInTheDocument()
+    expect(window.localStorage.getItem(lastSelectedLocationStorageKey)).toContain(
+      '"name":"Sofia"',
+    )
+  })
+
   it('renders a friendly error when the location search fails', async () => {
     const user = userEvent.setup()
-    mockGeolocationError(1)
+    window.localStorage.setItem(
+      lastSelectedLocationStorageKey,
+      JSON.stringify(varnaLocation),
+    )
 
+    mockedFetchCurrentWeather.mockResolvedValue(buildCurrentWeather())
     mockedSearchLocations.mockRejectedValue(new Error('Network request failed.'))
 
     render(<App />)
 
-    await user.click(screen.getByRole('button', { name: 'Search' }))
+    expect(await screen.findByText('Partly cloudy')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Varna', level: 2 })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Change location' }))
+    await user.type(screen.getByLabelText('Change location'), 'Varna')
 
     expect(
       await screen.findByText('Network request failed.'),
     ).toBeInTheDocument()
   })
 
-  it('renders a friendly error when current weather loading fails', async () => {
+  it('renders a friendly error when selected weather loading fails', async () => {
     const user = userEvent.setup()
-    mockGeolocationError(1)
-
-    mockedSearchLocations.mockResolvedValue([
-      {
-        id: 726050,
-        name: 'Varna',
-        country: 'Bulgaria',
-        latitude: 43.21912,
-        longitude: 27.91024,
-        admin1: 'Varna',
-        countryCode: 'BG',
-        timezone: 'Europe/Sofia',
-      },
-    ])
-
-    mockedFetchCurrentWeather.mockRejectedValue(
-      new Error('Unable to load current weather right now.'),
+    window.localStorage.setItem(
+      lastSelectedLocationStorageKey,
+      JSON.stringify(varnaLocation),
     )
+
+    mockedSearchLocations.mockResolvedValue([sofiaLocation])
+    mockedFetchCurrentWeather
+      .mockResolvedValueOnce(buildCurrentWeather())
+      .mockRejectedValueOnce(new Error('Unable to load current weather right now.'))
 
     render(<App />)
 
-    await user.click(screen.getByRole('button', { name: 'Search' }))
+    expect(await screen.findByText('Partly cloudy')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Varna', level: 2 })).toBeInTheDocument()
+    await chooseCityFromInlineSearch(user, 'Change location', 'Sofia')
 
     expect(
       await screen.findByText('Unable to load current weather right now.'),

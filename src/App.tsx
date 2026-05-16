@@ -1,24 +1,32 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Analytics } from '@vercel/analytics/react'
 import { searchLocations } from './api/geocodingApi'
-import {
-  reverseGeocodeLocation,
-  type ReverseGeocodedLocation,
-} from './api/reverseGeocodingApi'
 import { fetchVisitorCapital } from './api/visitorLocationApi'
 import { fetchCurrentWeather } from './api/weatherApi'
-import { SearchBox } from './components/SearchBox'
+import {
+  WeatherSceneAnimation,
+  type WeatherSceneAnimationKind,
+} from './components/WeatherSceneAnimation'
 import type { Location } from './models/location'
 import { getWeatherCodeIcon, type CurrentWeather } from './models/weather'
 import { formatLastUpdated } from './utils/formatLastUpdated'
 import './App.css'
 
-const DEFAULT_QUERY = 'Varna'
-const CURRENT_LOCATION_ID = -1
-const GEOLOCATION_TIMEOUT_MS = 10000
-const GEOLOCATION_MAX_AGE_MS = 300000
 const WINDY_SPEED_THRESHOLD = 30
 const LAST_UPDATED_REFRESH_MS = 60000
+const INLINE_LOCATION_RESULTS_LIMIT = 5
+const INLINE_LOCATION_SEARCH_DELAY_MS = 180
+const LAST_SELECTED_LOCATION_STORAGE_KEY = 'weather-now:last-selected-location'
+const FALLBACK_LOCATION: Location = {
+  id: 726050,
+  name: 'Varna',
+  country: 'Bulgaria',
+  latitude: 43.21912,
+  longitude: 27.91024,
+  admin1: 'Varna',
+  countryCode: 'BG',
+  timezone: 'Europe/Sofia',
+}
 
 type WeatherVisualKind =
   | 'clear'
@@ -100,8 +108,20 @@ function WeatherVisual({ weather }: { weather: CurrentWeather }) {
   )
 }
 
-function formatCoordinate(value: number) {
-  return value.toFixed(4)
+function getWeatherSceneAnimationKind(
+  weather: CurrentWeather,
+): WeatherSceneAnimationKind | null {
+  const visualKind = getWeatherVisualKind(weather)
+
+  if (weather.isDay && ['clear', 'partly-cloudy'].includes(visualKind)) {
+    return 'sunny'
+  }
+
+  if (visualKind === 'clear' || visualKind === 'partly-cloudy') {
+    return null
+  }
+
+  return visualKind
 }
 
 function formatLocationLine(location: Location) {
@@ -154,50 +174,279 @@ function formatForecastDay(date: string) {
   return weekday.charAt(0).toUpperCase() + weekday.slice(1)
 }
 
-function buildCurrentLocation(
-  latitude: number,
-  longitude: number,
-  resolvedLocation?: ReverseGeocodedLocation,
-): Location {
-  return {
-    id: CURRENT_LOCATION_ID,
-    name: resolvedLocation?.name ?? 'Current location',
-    country: resolvedLocation?.country ?? '',
-    latitude,
-    longitude,
-    admin1: resolvedLocation?.admin1,
-    countryCode: resolvedLocation?.countryCode,
-    timezone: resolvedLocation?.timezone,
+function isStoredLocation(value: unknown): value is Location {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const location = value as Partial<Location>
+
+  return (
+    typeof location.id === 'number' &&
+    Number.isFinite(location.id) &&
+    typeof location.name === 'string' &&
+    location.name.trim().length > 0 &&
+    typeof location.country === 'string' &&
+    typeof location.latitude === 'number' &&
+    Number.isFinite(location.latitude) &&
+    typeof location.longitude === 'number' &&
+    Number.isFinite(location.longitude)
+  )
+}
+
+function readLastSelectedLocation() {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    const storedLocation = window.localStorage.getItem(
+      LAST_SELECTED_LOCATION_STORAGE_KEY,
+    )
+
+    if (!storedLocation) {
+      return null
+    }
+
+    const parsedLocation = JSON.parse(storedLocation)
+
+    if (!isStoredLocation(parsedLocation)) {
+      window.localStorage.removeItem(LAST_SELECTED_LOCATION_STORAGE_KEY)
+      return null
+    }
+
+    return parsedLocation
+  } catch {
+    return null
   }
 }
 
-function getGeolocationErrorMessage(error: GeolocationPositionError): string {
-  switch (error.code) {
-    case 1:
-      return 'Location access was denied. Search for a city or retry with the location button.'
-    case 2:
-      return 'Your location could not be determined. Search for a city or retry.'
-    case 3:
-      return 'Location detection timed out. Search for a city or retry.'
-    default:
-      return 'Location detection failed. Search for a city or retry.'
+function saveLastSelectedLocation(location: Location) {
+  if (typeof window === 'undefined') {
+    return
   }
+
+  try {
+    window.localStorage.setItem(
+      LAST_SELECTED_LOCATION_STORAGE_KEY,
+      JSON.stringify(location),
+    )
+  } catch {
+    // Storage can be unavailable in restricted browsing modes.
+  }
+}
+
+async function resolveVisitorCapitalLocation(signal: AbortSignal) {
+  const visitorCapital = await fetchVisitorCapital(signal)
+
+  if (!visitorCapital) {
+    return FALLBACK_LOCATION
+  }
+
+  const matchingLocations = await searchLocations(visitorCapital.capital, signal)
+  const countryCode = visitorCapital.countryCode?.toUpperCase()
+
+  return (
+    matchingLocations.find(
+      (location) => location.countryCode?.toUpperCase() === countryCode,
+    ) ??
+    matchingLocations[0] ??
+    FALLBACK_LOCATION
+  )
 }
 
 type WeatherDashboardProps = {
   location: Location
   weather: CurrentWeather
   now: Date
-  onChangeLocation: () => void
+  onSelectLocation: (location: Location) => void
+}
+
+type InlineLocationSearchProps = {
+  onSelectLocation: (location: Location) => void
+  buttonLabel?: string
+  label?: string
+}
+
+function InlineLocationSearch({
+  onSelectLocation,
+  buttonLabel = 'Change location',
+  label = 'Change location',
+}: InlineLocationSearchProps) {
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<Location[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (!isExpanded) {
+      return
+    }
+
+    inputRef.current?.focus()
+  }, [isExpanded])
+
+  useEffect(() => {
+    if (!isExpanded) {
+      return
+    }
+
+    const normalizedQuery = query.trim()
+
+    if (normalizedQuery.length < 2) {
+      return
+    }
+
+    const controller = new AbortController()
+    const searchTimeoutId = window.setTimeout(() => {
+      setIsLoading(true)
+      setError(null)
+
+      void searchLocations(normalizedQuery, controller.signal)
+        .then((nextResults) => {
+          setResults(nextResults.slice(0, INLINE_LOCATION_RESULTS_LIMIT))
+        })
+        .catch((locationSearchError) => {
+          if (
+            locationSearchError instanceof DOMException &&
+            locationSearchError.name === 'AbortError'
+          ) {
+            return
+          }
+
+          setResults([])
+          setError(
+            locationSearchError instanceof Error
+              ? locationSearchError.message
+              : 'Unable to search locations right now.',
+          )
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setIsLoading(false)
+          }
+        })
+    }, INLINE_LOCATION_SEARCH_DELAY_MS)
+
+    return () => {
+      window.clearTimeout(searchTimeoutId)
+      controller.abort()
+    }
+  }, [isExpanded, query])
+
+  function selectLocation(location: Location) {
+    setIsExpanded(false)
+    setQuery('')
+    setResults([])
+    setError(null)
+    onSelectLocation(location)
+  }
+
+  function handleQueryChange(nextQuery: string) {
+    setQuery(nextQuery)
+
+    if (nextQuery.trim().length < 2) {
+      setResults([])
+      setError(null)
+      setIsLoading(false)
+    }
+  }
+
+  if (!isExpanded) {
+    return (
+      <button
+        type="button"
+        className="weather-dashboard__change-button"
+        onClick={() => setIsExpanded(true)}
+      >
+        {buttonLabel}
+      </button>
+    )
+  }
+
+  return (
+    <div className="inline-location-search">
+      <label className="inline-location-search__label" htmlFor="inline-city-search">
+        {label}
+      </label>
+      <div className="inline-location-search__control">
+        <input
+          ref={inputRef}
+          id="inline-city-search"
+          className="inline-location-search__input"
+          type="search"
+          value={query}
+          onChange={(event) => handleQueryChange(event.target.value)}
+          placeholder="Type a city"
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <button
+          type="button"
+          className="inline-location-search__close"
+          aria-label="Close location search"
+          onClick={() => {
+            setIsExpanded(false)
+            setQuery('')
+            setResults([])
+            setError(null)
+          }}
+        >
+          x
+        </button>
+      </div>
+      {isLoading ? (
+        <p className="inline-location-search__status">Searching...</p>
+      ) : null}
+      {error ? (
+        <p className="inline-location-search__status inline-location-search__status--error">
+          {error}
+        </p>
+      ) : null}
+      {results.length > 0 ? (
+        <ul className="inline-location-search__results">
+          {results.map((result) => {
+            const resultLine = formatLocationLine(result) || result.timezone
+
+            return (
+              <li key={result.id}>
+                <button
+                  type="button"
+                  aria-label={`Select ${result.name}${
+                    resultLine ? `, ${resultLine}` : ''
+                  }`}
+                  onClick={() => selectLocation(result)}
+                >
+                  <span>{result.name}</span>
+                  <small>{resultLine}</small>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      ) : null}
+    </div>
+  )
 }
 
 function WeatherDashboard({
   location,
   weather,
   now,
-  onChangeLocation,
+  onSelectLocation,
 }: WeatherDashboardProps) {
   const weatherLabel = weather.weatherDescription
+  const temperature = formatCompactTemperature(
+    weather.temperature,
+    weather.units.temperature,
+  )
+  const feelsLike = formatCompactTemperature(
+    weather.apparentTemperature,
+    weather.units.temperature,
+  )
+  const sceneAnimationKind = getWeatherSceneAnimationKind(weather)
   const locationLine = formatLocationLine(location)
   const metrics = [
     {
@@ -226,7 +475,21 @@ function WeatherDashboard({
   ]
 
   return (
-    <section className="weather-panel" aria-label="Current conditions">
+    <section
+      className={`weather-panel${
+        sceneAnimationKind
+          ? ` weather-panel--animated weather-panel--${sceneAnimationKind}`
+          : ''
+      }`}
+      aria-label="Current conditions"
+    >
+      {sceneAnimationKind ? (
+        <WeatherSceneAnimation
+          kind={sceneAnimationKind}
+          label={weather.weatherDescription}
+        />
+      ) : null}
+
       <header className="weather-dashboard__header">
         <div>
           <h2>{location.name}</h2>
@@ -235,29 +498,19 @@ function WeatherDashboard({
             Updated {formatLastUpdated(weather.time, weather.timezone, now)}
           </p>
         </div>
-        <button
-          type="button"
-          className="weather-dashboard__change-button"
-          onClick={onChangeLocation}
-        >
-          Change location
-        </button>
+        <InlineLocationSearch onSelectLocation={onSelectLocation} />
       </header>
 
       <div className="weather-dashboard__current">
         <div className="weather-dashboard__condition">
-          <WeatherVisual weather={weather} />
+          {sceneAnimationKind ? null : (
+            <WeatherVisual weather={weather} />
+          )}
           <p>{weatherLabel}</p>
         </div>
         <div className="weather-dashboard__temperature">
-          <p>{formatCompactTemperature(weather.temperature, weather.units.temperature)}</p>
-          <span>
-            Feels like{' '}
-            {formatCompactTemperature(
-              weather.apparentTemperature,
-              weather.units.temperature,
-            )}
-          </span>
+          <p>{temperature}</p>
+          <span>Feels like {feelsLike}</span>
         </div>
       </div>
 
@@ -321,81 +574,52 @@ function WeatherDashboard({
   )
 }
 
-function App() {
-  const geolocationSupported =
-    typeof navigator !== 'undefined' && 'geolocation' in navigator
-  const [query, setQuery] = useState(DEFAULT_QUERY)
-  const [locations, setLocations] = useState<Location[]>([])
-  const [searchError, setSearchError] = useState<string | null>(null)
-  const [isSearchLoading, setIsSearchLoading] = useState(false)
-  const [hasSearched, setHasSearched] = useState(false)
-  const [selectedLocationId, setSelectedLocationId] = useState<number | null>(
-    null,
+type WeatherStatusPanelProps = {
+  title: string
+  message: string
+  messageTone?: 'neutral' | 'success' | 'error'
+  onSelectLocation?: (location: Location) => void
+}
+
+function WeatherStatusPanel({
+  title,
+  message,
+  messageTone = 'neutral',
+  onSelectLocation,
+}: WeatherStatusPanelProps) {
+  return (
+    <section className="weather-panel weather-panel--empty" aria-label={title}>
+      <div className="weather-empty-state">
+        <h2>{title}</h2>
+        <p className={`weather-empty-state__message weather-empty-state__message--${messageTone}`}>
+          {message}
+        </p>
+        {onSelectLocation ? (
+          <InlineLocationSearch
+            onSelectLocation={onSelectLocation}
+            buttonLabel="Search city"
+            label="Search city"
+          />
+        ) : null}
+      </div>
+    </section>
   )
+}
+
+function App() {
   const [selectedLocation, setSelectedLocation] = useState<Location | null>(null)
   const [currentWeather, setCurrentWeather] = useState<CurrentWeather | null>(
     null,
   )
   const [now, setNow] = useState(() => new Date())
   const [weatherError, setWeatherError] = useState<string | null>(null)
-  const [isWeatherLoading, setIsWeatherLoading] = useState(false)
-  const [isLocatingUser, setIsLocatingUser] = useState(geolocationSupported)
-  const [locationMessage, setLocationMessage] = useState<string | null>(
-    geolocationSupported
-      ? 'Trying to detect your current location...'
-      : 'Browser location is unavailable. Search for a city instead.',
-  )
-  const [locationMessageTone, setLocationMessageTone] = useState<
-    'neutral' | 'success' | 'error'
-  >(geolocationSupported ? 'neutral' : 'error')
-  const searchAbortControllerRef = useRef<AbortController | null>(null)
+  const [isWeatherLoading, setIsWeatherLoading] = useState(true)
   const weatherAbortControllerRef = useRef<AbortController | null>(null)
-  const reverseGeocodeAbortControllerRef = useRef<AbortController | null>(null)
-  const autoLocationAllowedRef = useRef(true)
-  const canApplyDetectedDefaultQueryRef = useRef(true)
-  const loadCurrentWeatherRef = useRef<(location: Location) => Promise<void>>(
-    async () => {},
-  )
-
-  const statusMessage = useMemo(() => {
-    if (searchError) {
-      return searchError
-    }
-
-    if (isSearchLoading) {
-      return 'Searching for matching locations...'
-    }
-
-    if (!hasSearched) {
-      return 'Start with Varna to validate the first checkpoint.'
-    }
-
-    if (locations.length === 0) {
-      return 'No matching locations found.'
-    }
-
-    if (locations.length === 1) {
-      return 'Found 1 matching location.'
-    }
-
-    return `Found ${locations.length} matching locations.`
-  }, [hasSearched, isSearchLoading, locations.length, searchError])
-
-  function clearWeatherState() {
-    weatherAbortControllerRef.current?.abort()
-    reverseGeocodeAbortControllerRef.current?.abort()
-    weatherAbortControllerRef.current = null
-    reverseGeocodeAbortControllerRef.current = null
-    setSelectedLocationId(null)
-    setSelectedLocation(null)
-    setCurrentWeather(null)
-    setWeatherError(null)
-    setIsWeatherLoading(false)
-  }
+  const initialLocationAbortControllerRef = useRef<AbortController | null>(null)
+  const hasSelectedLocationRef = useRef(false)
 
   const loadCurrentWeather = useCallback(async (location: Location) => {
     setSelectedLocation(location)
-    setSelectedLocationId(location.id)
     weatherAbortControllerRef.current?.abort()
 
     const controller = new AbortController()
@@ -440,10 +664,6 @@ function App() {
   }, [])
 
   useEffect(() => {
-    loadCurrentWeatherRef.current = loadCurrentWeather
-  }, [loadCurrentWeather])
-
-  useEffect(() => {
     if (!currentWeather) {
       return
     }
@@ -457,16 +677,96 @@ function App() {
     }
   }, [currentWeather])
 
-  useEffect(() => {
-    const controller = new AbortController()
+  const handleSelectLocation = useCallback(
+    (location: Location) => {
+      hasSelectedLocationRef.current = true
+      initialLocationAbortControllerRef.current?.abort()
+      initialLocationAbortControllerRef.current = null
+      saveLastSelectedLocation(location)
+      void loadCurrentWeather(location)
+    },
+    [loadCurrentWeather],
+  )
 
-    void fetchVisitorCapital(controller.signal)
-      .then((visitorCapital) => {
-        if (!visitorCapital || !canApplyDetectedDefaultQueryRef.current) {
+  useEffect(() => {
+    const initialLocationController = new AbortController()
+    initialLocationAbortControllerRef.current = initialLocationController
+
+    const savedLocation = readLastSelectedLocation()
+    const initialLocationPromise = savedLocation
+      ? Promise.resolve(savedLocation)
+      : resolveVisitorCapitalLocation(initialLocationController.signal).catch(
+          (error) => {
+            if (
+              error instanceof DOMException &&
+              error.name === 'AbortError'
+            ) {
+              throw error
+            }
+
+            return FALLBACK_LOCATION
+          },
+        )
+
+    void initialLocationPromise
+      .then((initialLocation) => {
+        if (
+          initialLocationController.signal.aborted ||
+          hasSelectedLocationRef.current
+        ) {
           return
         }
 
-        setQuery(visitorCapital.capital)
+        setSelectedLocation(initialLocation)
+        setCurrentWeather(null)
+        setWeatherError(null)
+        setIsWeatherLoading(true)
+
+        weatherAbortControllerRef.current?.abort()
+        const weatherController = new AbortController()
+        weatherAbortControllerRef.current = weatherController
+
+        return fetchCurrentWeather(
+          {
+            latitude: initialLocation.latitude,
+            longitude: initialLocation.longitude,
+            timezone: initialLocation.timezone,
+          },
+          weatherController.signal,
+        )
+          .then((nextCurrentWeather) => {
+            if (weatherAbortControllerRef.current !== weatherController) {
+              return
+            }
+
+            setCurrentWeather(nextCurrentWeather)
+            setNow(new Date())
+            saveLastSelectedLocation(initialLocation)
+          })
+          .catch((weatherLoadError) => {
+            if (
+              weatherLoadError instanceof DOMException &&
+              weatherLoadError.name === 'AbortError'
+            ) {
+              return
+            }
+
+            if (weatherAbortControllerRef.current !== weatherController) {
+              return
+            }
+
+            setWeatherError(
+              weatherLoadError instanceof Error
+                ? weatherLoadError.message
+                : 'Unable to load current weather right now.',
+            )
+          })
+          .finally(() => {
+            if (weatherAbortControllerRef.current === weatherController) {
+              weatherAbortControllerRef.current = null
+              setIsWeatherLoading(false)
+            }
+          })
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === 'AbortError') {
@@ -475,237 +775,10 @@ function App() {
       })
 
     return () => {
-      controller.abort()
+      initialLocationController.abort()
+      weatherAbortControllerRef.current?.abort()
     }
   }, [])
-
-  const loadDetectedCurrentLocation = useCallback(
-    async (latitude: number, longitude: number, manual: boolean) => {
-      reverseGeocodeAbortControllerRef.current?.abort()
-
-      const controller = new AbortController()
-      reverseGeocodeAbortControllerRef.current = controller
-
-      try {
-        const resolvedLocation = await reverseGeocodeLocation(
-          latitude,
-          longitude,
-          controller.signal,
-        )
-
-        if (reverseGeocodeAbortControllerRef.current !== controller) {
-          return
-        }
-
-        if (!manual && !autoLocationAllowedRef.current) {
-          return
-        }
-
-        void loadCurrentWeather(
-          buildCurrentLocation(
-            latitude,
-            longitude,
-            resolvedLocation ?? undefined,
-          ),
-        )
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
-
-        if (!manual && !autoLocationAllowedRef.current) {
-          return
-        }
-
-        void loadCurrentWeather(buildCurrentLocation(latitude, longitude))
-      } finally {
-        if (reverseGeocodeAbortControllerRef.current === controller) {
-          reverseGeocodeAbortControllerRef.current = null
-        }
-      }
-    },
-    [loadCurrentWeather],
-  )
-
-  async function requestCurrentLocation(manual = false) {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      setLocationMessage(
-        'Browser location is unavailable. Search for a city instead.',
-      )
-      setLocationMessageTone('error')
-      setIsLocatingUser(false)
-      return
-    }
-
-    setIsLocatingUser(true)
-    setLocationMessage(
-      manual
-        ? 'Detecting your current location...'
-        : 'Trying to detect your current location...',
-    )
-    setLocationMessageTone('neutral')
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        if (!manual && !autoLocationAllowedRef.current) {
-          return
-        }
-
-        setIsLocatingUser(false)
-        setLocationMessage('Using your current location.')
-        setLocationMessageTone('success')
-
-        void loadDetectedCurrentLocation(
-          position.coords.latitude,
-          position.coords.longitude,
-          manual,
-        )
-      },
-      (error) => {
-        if (!manual && !autoLocationAllowedRef.current) {
-          return
-        }
-
-        setIsLocatingUser(false)
-        setLocationMessage(getGeolocationErrorMessage(error))
-        setLocationMessageTone('error')
-      },
-      {
-        enableHighAccuracy: false,
-        timeout: GEOLOCATION_TIMEOUT_MS,
-        maximumAge: GEOLOCATION_MAX_AGE_MS,
-      },
-    )
-  }
-
-  function handleQueryChange(nextQuery: string) {
-    canApplyDetectedDefaultQueryRef.current = false
-    setQuery(nextQuery)
-  }
-
-  async function handleSearch() {
-    const normalizedQuery = query.trim()
-    autoLocationAllowedRef.current = false
-    canApplyDetectedDefaultQueryRef.current = false
-    setIsLocatingUser(false)
-    reverseGeocodeAbortControllerRef.current?.abort()
-    reverseGeocodeAbortControllerRef.current = null
-
-    if (locationMessageTone !== 'error') {
-      setLocationMessage(null)
-    }
-
-    if (normalizedQuery.length < 2) {
-      searchAbortControllerRef.current?.abort()
-      searchAbortControllerRef.current = null
-      clearWeatherState()
-      setHasSearched(false)
-      setLocations([])
-      setSearchError('Enter at least 2 characters to search for a city.')
-      setIsSearchLoading(false)
-      return
-    }
-
-    searchAbortControllerRef.current?.abort()
-    const controller = new AbortController()
-    searchAbortControllerRef.current = controller
-
-    setHasSearched(true)
-    setIsSearchLoading(true)
-    setSearchError(null)
-
-    try {
-      const results = await searchLocations(normalizedQuery, controller.signal)
-
-      setLocations(results)
-
-      const firstMatch = results[0]
-
-      if (!firstMatch) {
-        clearWeatherState()
-        return
-      }
-
-      void loadCurrentWeather(firstMatch)
-    } catch (locationSearchError) {
-      if (
-        locationSearchError instanceof DOMException &&
-        locationSearchError.name === 'AbortError'
-      ) {
-        return
-      }
-
-      setLocations([])
-      clearWeatherState()
-      setSearchError(
-        locationSearchError instanceof Error
-          ? locationSearchError.message
-          : 'Unable to search locations right now.',
-      )
-    } finally {
-      if (searchAbortControllerRef.current === controller) {
-        searchAbortControllerRef.current = null
-        setIsSearchLoading(false)
-      }
-    }
-  }
-
-  useEffect(() => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      return () => {
-        autoLocationAllowedRef.current = false
-        searchAbortControllerRef.current?.abort()
-        weatherAbortControllerRef.current?.abort()
-        reverseGeocodeAbortControllerRef.current?.abort()
-      }
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        if (!autoLocationAllowedRef.current) {
-          return
-        }
-
-        setIsLocatingUser(false)
-        setLocationMessage('Using your current location.')
-        setLocationMessageTone('success')
-
-        void loadDetectedCurrentLocation(
-          position.coords.latitude,
-          position.coords.longitude,
-          false,
-        )
-      },
-      (error) => {
-        if (!autoLocationAllowedRef.current) {
-          return
-        }
-
-        setIsLocatingUser(false)
-        setLocationMessage(getGeolocationErrorMessage(error))
-        setLocationMessageTone('error')
-      },
-      {
-        enableHighAccuracy: false,
-        timeout: GEOLOCATION_TIMEOUT_MS,
-        maximumAge: GEOLOCATION_MAX_AGE_MS,
-      },
-    )
-
-    return () => {
-      autoLocationAllowedRef.current = false
-      searchAbortControllerRef.current?.abort()
-      weatherAbortControllerRef.current?.abort()
-      reverseGeocodeAbortControllerRef.current?.abort()
-    }
-  }, [loadDetectedCurrentLocation])
-
-  function focusCitySearch() {
-    const searchInput = document.getElementById('city-search')
-
-    searchInput?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    searchInput?.focus()
-  }
 
   return (
     <div className="app-shell">
@@ -714,144 +787,36 @@ function App() {
           className="weather-section weather-section--top"
           aria-label="Weather dashboard"
         >
-          {!selectedLocation ? (
-            <div className="results-empty">
-              <p>
-                {isLocatingUser
-                  ? 'Waiting for browser location access before loading weather.'
-                  : 'Choose a matching location to fetch current weather data.'}
-              </p>
-            </div>
-          ) : isWeatherLoading ? (
-            <div className="results-empty">
-              <p>Loading current weather...</p>
-            </div>
-          ) : weatherError ? (
-            <div className="results-empty">
-              <p className="status-message--error">{weatherError}</p>
-            </div>
-          ) : currentWeather ? (
+          {isWeatherLoading ? (
+            <WeatherStatusPanel
+              title={selectedLocation?.name ?? 'Loading local weather'}
+              message={
+                selectedLocation
+                  ? 'Loading current weather...'
+                  : 'Finding the capital for your country...'
+              }
+              onSelectLocation={selectedLocation ? undefined : handleSelectLocation}
+            />
+          ) : weatherError && selectedLocation ? (
+            <WeatherStatusPanel
+              title={selectedLocation.name}
+              message={weatherError}
+              messageTone="error"
+              onSelectLocation={handleSelectLocation}
+            />
+          ) : currentWeather && selectedLocation ? (
             <WeatherDashboard
               location={selectedLocation}
               weather={currentWeather}
               now={now}
-              onChangeLocation={focusCitySearch}
+              onSelectLocation={handleSelectLocation}
             />
           ) : (
-            <div className="results-empty">
-              <p>Choose a matching location to fetch current weather data.</p>
-            </div>
-          )}
-        </section>
-
-        <section className="search-band" aria-label="City search">
-          <div className="search-band__inner">
-            <SearchBox
-              value={query}
-              onChange={handleQueryChange}
-              onSubmit={() => {
-                void handleSearch()
-              }}
-              isLoading={isSearchLoading}
+            <WeatherStatusPanel
+              title={selectedLocation?.name ?? 'Choose location'}
+              message="Search for a city to load current weather."
+              onSelectLocation={handleSelectLocation}
             />
-            <p
-              className={`status-message${searchError ? ' status-message--error' : ''}`}
-              aria-live="polite"
-            >
-              {statusMessage}
-            </p>
-            <div className="search-band__actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => {
-                  autoLocationAllowedRef.current = false
-                  void requestCurrentLocation(true)
-                }}
-                disabled={isLocatingUser}
-              >
-                {isLocatingUser ? 'Detecting location...' : 'Use my location'}
-              </button>
-              {locationMessage ? (
-                <p
-                  className={`assistive-message assistive-message--${locationMessageTone}`}
-                  aria-live="polite"
-                >
-                  {locationMessage}
-                </p>
-              ) : null}
-            </div>
-          </div>
-        </section>
-
-        <section className="results-section" aria-labelledby="results-title">
-          <div className="results-section__header">
-            <div>
-              <h2 id="results-title">Matching locations</h2>
-              <p>Select a result to load current weather for that location.</p>
-            </div>
-          </div>
-
-          {locations.length > 0 ? (
-            <ul className="results-grid">
-              {locations.map((location) => {
-                const isSelected = selectedLocationId === location.id
-
-                return (
-                  <li
-                    key={location.id}
-                    className={`result-card${isSelected ? ' result-card--selected' : ''}`}
-                  >
-                    <button
-                      type="button"
-                      className="result-card__button"
-                      onClick={() => {
-                        autoLocationAllowedRef.current = false
-                        void loadCurrentWeather(location)
-                      }}
-                    >
-                      <div className="result-card__top">
-                        <div>
-                          <h3>{location.name}</h3>
-                          <p>{formatLocationLine(location)}</p>
-                        </div>
-                      </div>
-                      <dl className="result-card__details">
-                        <div>
-                          <dt>Latitude</dt>
-                          <dd>{formatCoordinate(location.latitude)}</dd>
-                        </div>
-                        <div>
-                          <dt>Longitude</dt>
-                          <dd>{formatCoordinate(location.longitude)}</dd>
-                        </div>
-                        <div>
-                          <dt>Country code</dt>
-                          <dd>{location.countryCode ?? 'N/A'}</dd>
-                        </div>
-                        <div>
-                          <dt>Timezone</dt>
-                          <dd>{location.timezone ?? 'N/A'}</dd>
-                        </div>
-                      </dl>
-                      <p className="result-card__selection">
-                        {isSelected
-                          ? 'Current weather loaded for this location.'
-                          : 'Load current weather for this location.'}
-                      </p>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          ) : (
-            <div className="results-empty">
-              <p>
-                {hasSearched
-                  ? 'Try another city name if you need a different match.'
-                  : 'Results will appear here after the first search.'}
-              </p>
-            </div>
           )}
         </section>
       </main>
